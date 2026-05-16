@@ -107,19 +107,19 @@ export default function DermaPanel() {
   const [activeTab, setActiveTab] = useState("Özet"); 
   const [patientData, setPatientData] = useState(patientDatabase);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false); // AI yazıyor simülasyonu
+  const [isTyping, setIsTyping] = useState(false);
 
   const currentPatient = patientData[selectedPatient];
 
-  // CHATBOT CEVAP MOTORU (Yenilendi)
-  const handleSend = () => {
+  // CHATBOT CEVAP MOTORU (Hatalı ve mükerrer bloklar temizlendi)
+  const handleSend = async () => {
     if (!input.trim() || isTyping) return;
 
     const userText = input.trim();
     const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const userMessage = { role: "user", text: userText, time: currentTime };
 
-    // 1. Kullanıcı Mesajını Ekle
+    // 1. Kullanıcı Mesajını Ekrana Ekle
     setPatientData((prevData) => {
       const copyData = { ...prevData };
       const copyPatient = { ...copyData[selectedPatient] };
@@ -129,23 +129,65 @@ export default function DermaPanel() {
     });
 
     setInput("");
-    setIsTyping(true); // "Yapay zeka düşünüyor..." durumunu aktif et
+    setIsTyping(true);
 
-    // 2. AI Yanıt Simülasyonu (1 saniye gecikmeli çalışır)
-    setTimeout(() => {
-      const aiTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      
-      // Hastanın risk durumuna göre dinamik akıllı cevap seçimi
-      let aiText = `Anlaşılmıştır. Girilen '${userText}' parametresi sisteme işlendi. Hastanın klinik geçmişi ve güncel laboratuvar verileriyle çapraz sorgulama yapılıyor.`;
-      
-      if (copyDataRef().risk > 0.75) {
-        aiText = `Kritik vaka uyarısı: Sorduğunuz "${userText}" konusu, hastanın yüksek risk skoru (${copyDataRef().risk}) ile doğrudan ilişkili olabilir. NovaVision lezyon kenar düzensizliği sınırlarını yeniden analiz ediyor. Lütfen gerekirse acil eksizyonel biyopsi endikasyonunu koruyun.`;
-      } else if (copyDataRef().risk < 0.40) {
-        aiText = `Sistem Bildirisi: Hastanın risk skoru düşük (${copyDataRef().risk}) ve stabil durumda. İlettiğiniz "${userText}" bilgisi kayıtlara eklendi. Rutin takip protokolünün dışına çıkılmasına şu aşamada gerek görülmemektedir.`;
+try {
+      const response = await fetch("https://api.puq.ai/h/9ea854b921a9/sync", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: userText,
+          patient_id: currentPatient.id,
+          patient_name: selectedPatient,
+          patient_risk: currentPatient.risk
+        }),
+      });
+
+      // 1. Gelen ham yanıtı nesneye çeviriyoruz
+      const data = await response.json();
+      console.log("Puq.ai'den dönen ham veri:", data);
+
+      // Varsayılan B planı mesajı
+      let aiReplyText = "puq.ai içeriği analiz etti ancak boş bir yanıt döndü.";
+
+      // 2. Metin tabanlı arama ve ayıklama (Regex)
+      if (data && typeof data.data === "string") {
+        // "content": ifadesinden sonra gelen ve sondaki süslü paranteze kadar olan kısmı yakalar
+        const match = data.data.match(/"content"\s*:\s*([\s\S]*?)\s*}\s*$/);
+        
+        if (match && match[1]) {
+          let extracted = match[1].trim();
+          
+          // Eğer metnin başında ve sonunda Puq.ai kazara tırnak koyduysa onları temizle
+          if (extracted.startsWith('"') && extracted.endsWith('"')) {
+            extracted = extracted.slice(1, -1);
+          }
+          
+          aiReplyText = extracted;
+        }
+      } 
+      // Alternatif durumlar için yedek kontroller
+      else if (data && data.data && data.data.content) {
+        aiReplyText = data.data.content;
+      } else if (data && data.content) {
+        aiReplyText = data.content;
       }
 
-      const aiMessage = { role: "ai", text: aiText, time: aiTime };
+      console.log("Ekrana Kesin Yazılacak Yanıt:", aiReplyText);
 
+      // 3. Mesaj objesini hazırlıyoruz
+      const aiMessage = {
+        role: "ai",
+        text: aiReplyText,
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+      };
+
+      // 4. Gelen Yapay Zeka Yanıtını Arayüze Ekle
       setPatientData((prevData) => {
         const copyData = { ...prevData };
         const copyPatient = { ...copyData[selectedPatient] };
@@ -154,12 +196,25 @@ export default function DermaPanel() {
         return copyData;
       });
 
-      setIsTyping(false); // Yazma simülasyonunu bitir
-    }, 1100);
+    } catch (err) {
+      
+      const errorMessage = {
+        role: "ai",
+        text: "Sistemle iletişim kurulurken bir hata oluştu. Lütfen puq.ai akışınızı kontrol edin.",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      
+      setPatientData((prevData) => {
+        const copyData = { ...prevData };
+        const copyPatient = { ...copyData[selectedPatient] };
+        copyPatient.messages = [...copyPatient.messages, errorMessage];
+        copyData[selectedPatient] = copyPatient;
+        return copyData;
+      });
+    } finally {
+      setIsTyping(false);
+    }
   };
-
-  // State'in anlık güncel haline erişmek için helper fonksiyon
-  const copyDataRef = () => patientData[selectedPatient];
 
   const btnStyle = {
     backgroundColor: "transparent",
@@ -397,7 +452,7 @@ export default function DermaPanel() {
                     </div>
                   ))}
                   
-                  {/* AI Yazıyor... Simülasyon Efekti */}
+                  {/* AI Yazıyor Efekti */}
                   {isTyping && (
                     <div style={{ alignSelf: "flex-start", maxWidth: "80%" }}>
                       <div style={{ padding: "10px 16px", borderRadius: "12px", fontSize: "0.85rem", backgroundColor: "#252541", color: colors.textLo, fontStyle: "italic" }}>
